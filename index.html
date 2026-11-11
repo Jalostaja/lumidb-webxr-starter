@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LumiDB WebXR Starter</title>
+<style>
+  :root { --bg:#0b0f14; --panel:rgba(16,22,30,.9); --line:#2a3542; --fg:#e6edf3; --dim:#8b98a5; --accent:#4cc2ff; --bad:#ff7b72; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; overflow:hidden; }
+  canvas { display:block; }
+  .panel { position:fixed; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  #setup { top:12px; left:12px; width:min(440px, calc(100vw - 48px)); }
+  #setup h1 { font-size:15px; margin:0 0 8px; }
+  label { display:block; color:var(--dim); font-size:12px; margin:8px 0 2px; }
+  input { width:100%; box-sizing:border-box; padding:7px 8px; border-radius:6px; border:1px solid var(--line); background:#0b1117; color:var(--fg); font:12px ui-monospace, monospace; }
+  button { padding:7px 12px; border-radius:6px; border:1px solid var(--line); background:#17212c; color:var(--fg); font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#04111a; border-color:var(--accent); font-weight:600; }
+  #msg { margin-top:8px; font-size:12px; color:var(--dim); white-space:pre-wrap; word-break:break-word; }
+  #msg.bad { color:var(--bad); }
+  #hud { bottom:12px; left:12px; min-width:230px; display:none; }
+  #hud .name { font-weight:600; }
+  #hud .row { color:var(--dim); font-size:12px; }
+  #hud .btns { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  #hud .btns button { padding:4px 8px; font-size:12px; }
+  #enter-vr { position:fixed; bottom:12px; right:12px; display:none; }
+  #help { position:fixed; bottom:12px; left:50%; transform:translateX(-50%); color:var(--dim); font-size:12px; pointer-events:none; text-align:center; }
+</style>
+<!-- Versions are pinned exactly. To upgrade, change them here and re-run `npm test`. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+    "3d-tiles-renderer/three": "https://cdn.jsdelivr.net/npm/3d-tiles-renderer@0.5.3/build/index.three.js",
+    "3d-tiles-renderer/plugins": "https://cdn.jsdelivr.net/npm/3d-tiles-renderer@0.5.3/build/index.plugins.js",
+    "iwer": "https://cdn.jsdelivr.net/npm/iwer@2.7.0/build/iwer.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="setup" class="panel">
+  <h1>LumiDB point cloud in VR</h1>
+  <label for="link">Tileset link (from the LumiDB viewer)</label>
+  <input id="link" placeholder="https://api.lumidb.com/api/tables/3d_tileset?p=…" autocomplete="off" spellcheck="false">
+  <label for="key">API key (stored in this browser only)</label>
+  <input id="key" type="password" placeholder="lumi_…" autocomplete="off">
+  <div style="margin-top:10px"><button id="load" class="primary">Load</button></div>
+  <div id="msg"></div>
+</div>
+<div id="hud" class="panel"></div>
+<button id="enter-vr" class="primary">Enter VR</button>
+<div id="help">Desktop: drag to orbit · wheel to zoom · WASD + Q/E to fly (Shift = fast) · R to reset</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TilesRenderer } from '3d-tiles-renderer/three';
+import { ReorientationPlugin } from '3d-tiles-renderer/plugins';
+
+// ── Headless / no-headset testing: add ?emulate=quest to emulate a Meta Quest 3 (IWER).
+// Installed before anything touches navigator.xr. Remove this block if you never test that way.
+if (new URLSearchParams(location.search).get('emulate') === 'quest') {
+  const { XRDevice, metaQuest3 } = await import('iwer');
+  const device = new XRDevice(metaQuest3);
+  device.installRuntime({ forceInstall: true });   // headless Chrome has a native (empty) navigator.xr
+  window.__xrDevice = device;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 0. CONFIG: the knobs you are most likely to want to change.
+// ════════════════════════════════════════════════════════════════════════════
+const CONFIG = {
+  // COMPAT SHIM (delete when the server is fixed): LumiDB `region` bounding
+  // volumes can be in degrees, 3d-tiles-renderer needs radians.
+  //   'auto' = convert only if the values cannot be radians; true/false = force.
+  REGION_DEGREES_FIX: 'auto',
+  // COMPAT SHIM: nested tileset URIs (".../3d_tileset?node_path=…") have no
+  // ".json" extension, so the library would parse them as tile content.
+  NESTED_TILESET_URI_FIX: true,
+
+  errorTarget: 12,            // screen-space error in px. Lower = more detail, more points.
+  pointSize: 0.05,            // dot size in DATA metres (constant as you scale the world), distance-attenuated
+  pointMinPx: 2, pointMaxPx: 40,
+  xrEyeResolution: 1440,      // per-eye px used for level-of-detail while in VR
+
+  flyBase: 1, flyPerMetre: 0.8, boost: 4,   // m/s = (base + perMetre × height above data) × boost
+  snapDegrees: 30, smoothDegPerSec: 90,
+  minScale: 0.02, maxScale: 20000,          // world scale limits (1:N)
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// 1. LUMIDB LINKS: parse, validate, normalize
+// ════════════════════════════════════════════════════════════════════════════
+const b64decode = (s) => {
+  s = s.replace(/-/g, '+').replace(/_/g, '/').replace(/ /g, '+');
+  while (s.length % 4) s += '=';
+  return new TextDecoder().decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0)));
+};
+const b64encode = (str) => {
+  let bin = '';
+  new TextEncoder().encode(str).forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin);
+};
+
+/** Validates a pasted viewer link; returns what the app needs. Throws a readable Error. */
+function parseLink(text) {
+  let url;
+  try { url = new URL(text.trim()); } catch { throw new Error('That is not a URL.'); }
+  if (!/\/tables\/3d_tileset\/?$/.test(url.pathname)) throw new Error('The link path must end in /tables/3d_tileset.');
+  const m = /[?&]p=([^&#]*)/.exec(url.search);
+  if (!m) throw new Error('The link has no p= parameter.');
+  let payload;
+  try { payload = JSON.parse(b64decode(decodeURIComponent(m[1]))); }
+  catch { throw new Error('Could not decode p (expected base64 of JSON).'); }
+  if (!payload.boundary_proj) throw new Error('p has no boundary_proj.');
+  const dropped = payload.output_proj;
+  delete payload.output_proj;          // omitted => region in 4979 (lon/lat), tile content in ECEF
+  const p = b64encode(JSON.stringify(payload));
+  const tables = payload.table_name ? [payload.table_name]
+    : (payload.tables || []).map((t) => (typeof t === 'string' ? t : t.table_name ?? JSON.stringify(t)));
+  return {
+    host: url.host,
+    p,
+    tilesetUrl: `${url.origin}${url.pathname}?p=${encodeURIComponent(p)}`,
+    tables,
+    note: dropped ? `Dropped output_proj (${dropped}).` : '',
+  };
+}
+
+const authHeader = (key) => (/^(Bearer |eyJ)/.test(key) ? `Bearer ${key.replace(/^Bearer /, '')}` : `ApiKey ${key}`);
+
+// ════════════════════════════════════════════════════════════════════════════
+// 2. LUMIDB TILES PLUGIN: auth header, compat shims, dataset extent
+//    Hooks: preprocessURL + fetchData (3d-tiles-renderer plugin API).
+// ════════════════════════════════════════════════════════════════════════════
+const DEG = Math.PI / 180;
+
+/** Fixes a fetched tileset.json in place. Returns the dataset's extent. */
+function shimTileset(json) {
+  const tiles = [];
+  (function visit(t) { tiles.push(t); (t.children || []).forEach(visit); })(json.root);
+  const contents = (t) => [t.content, ...(t.contents || [])].filter(Boolean);
+  const volumes = (t) => [t.boundingVolume, t.viewerRequestVolume, ...contents(t).map((c) => c.boundingVolume)].filter((v) => v?.region);
+
+  const regions = tiles.flatMap((t) => volumes(t).map((v) => v.region));
+  const looksLikeDegrees = regions.some((r) => Math.abs(r[0]) > Math.PI + 1e-3 || Math.abs(r[2]) > Math.PI + 1e-3 || Math.abs(r[1]) > Math.PI / 2 + 1e-3 || Math.abs(r[3]) > Math.PI / 2 + 1e-3);
+  const convert = CONFIG.REGION_DEGREES_FIX === true || (CONFIG.REGION_DEGREES_FIX === 'auto' && looksLikeDegrees);
+  if (convert) regions.forEach((r) => { for (let i = 0; i < 4; i++) r[i] *= DEG; });   // heights stay metres
+
+  if (CONFIG.NESTED_TILESET_URI_FIX) {
+    tiles.forEach((t) => contents(t).forEach((c) => {
+      if (c.uri) c.uri = c.uri.replace(/(^|\/)3d_tileset(?=\?|$)/, '$13d_tileset.json');
+    }));
+  }
+
+  // Dataset extent. Tile volumes are loose octree cells; the root's own content volume is the
+  // tight bound of the data (LumiDB sets it), so prefer that.
+  const r = json.root.content?.boundingVolume?.region ?? json.root.boundingVolume?.region;
+  if (!r) return { converted: convert };
+  const lat = (r[1] + r[3]) / 2, lon = (r[0] + r[2]) / 2, R = 6378137;
+  const east = (r[2] - r[0]) * R * Math.cos(lat), north = (r[3] - r[1]) * R;
+  return { converted: convert, lat, lon, minH: r[4], maxH: r[5], radius: 0.5 * Math.hypot(east, north, r[5] - r[4]) };
+}
+
+class LumiDBPlugin {
+  constructor({ host, p, authorization, reorient, onRootExtent }) {
+    this.name = 'LUMIDB_PLUGIN';
+    Object.assign(this, { host, p, authorization, reorient, onRootExtent });
+  }
+  preprocessURL(url) {
+    const u = new URL(url, location.href);
+    if (u.host !== this.host) return url;
+    // Child URIs normally carry their own p. Append ours if one does not.
+    if (/\/tables\/3d_tile(set(\.json)?)?$/.test(u.pathname) && !u.searchParams.has('p')) u.searchParams.set('p', this.p);
+    return u.toString();
+  }
+  // Must return null (synchronously) to leave other hosts to the default fetch,
+  // so the key is never sent anywhere but the LumiDB host.
+  fetchData(url, options) {
+    const u = new URL(url, location.href);
+    if (u.host !== this.host) return null;
+    u.pathname = u.pathname.replace(/\/3d_tileset\.json$/, '/3d_tileset');   // undo the nested-URI shim
+    const isTileset = /\/3d_tileset$/.test(u.pathname);
+    return fetch(u, { ...options, headers: { ...options?.headers, Authorization: this.authorization } }).then(async (res) => {
+      if (!res.ok || !isTileset) return res;
+      const json = await res.json();
+      const extent = shimTileset(json);
+      if (!u.searchParams.has('node_path') && extent.radius) {      // the root tileset
+        Object.assign(this.reorient, { lat: extent.lat, lon: extent.lon, height: extent.minH });  // floor at y = 0
+        this.onRootExtent(extent);
+      }
+      return new Response(JSON.stringify(json), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 3. SCENE
+//    scene ─ rig (position, yaw, scale = THE navigation state) ─ camera, controllers, VR panel
+//          └ tiles.group (the dataset, never moves; floor at y = 0, Y up)
+//    Scaling the rig by s makes you s times bigger: the world looks 1:s.
+// ════════════════════════════════════════════════════════════════════════════
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f14);
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1e5);
+const rig = new THREE.Group();
+rig.add(camera);
+scene.add(rig);
+const UP = new THREE.Vector3(0, 1, 0);
+
+const grid = new THREE.GridHelper(1, 20, 0x2a3542, 0x1a222c);   // floor reference, sized to the data
+scene.add(grid);
+
+const state = { // shared UI state
+  info: null,           // dataset extent from the root tileset
+  tables: [], tiles: null,
+  colorMode: 'rgb',     // 'rgb' | 'height'
+  pointSize: CONFIG.pointSize,
+  smoothTurn: false, vignette: true,
+  hasColor: true,
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// 4. POINTS: material patch (size clamp, round dots, sRGB colour, height ramp)
+// ════════════════════════════════════════════════════════════════════════════
+const U = { invScale: { value: 1 }, mode: { value: 0 }, hMin: { value: 0 }, hMax: { value: 100 }, minPx: { value: CONFIG.pointMinPx }, maxPx: { value: CONFIG.pointMaxPx } };
+const materials = new Set();
+
+function patchPointsMaterial(m, hasColor) {
+  m.size = state.pointSize;
+  m.sizeAttenuation = true;
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, { uInvScale: U.invScale, uMode: U.mode, uHMin: U.hMin, uHMax: U.hMax, uMinPx: U.minPx, uMaxPx: U.maxPx });
+    shader.vertexShader = 'uniform float uMinPx, uMaxPx, uInvScale; varying float vH;\n' + shader.vertexShader
+      .replace('gl_PointSize = size;', 'gl_PointSize = size * uInvScale;')   // keep the size in data metres when the rig is scaled
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n vH = (modelMatrix * vec4(transformed, 1.0)).y;')
+      .replace('#include <logdepthbuf_vertex>', 'gl_PointSize = clamp(gl_PointSize, uMinPx, uMaxPx);\n#include <logdepthbuf_vertex>');
+    shader.fragmentShader = `uniform float uMode, uHMin, uHMax; varying float vH;
+      vec3 ramp(float t) {   // blue → cyan → green → yellow → red
+        vec3 a = vec3(0.10,0.25,0.95), b = vec3(0.05,0.85,0.95), c = vec3(0.30,0.90,0.30), d = vec3(0.98,0.90,0.15), e = vec3(0.95,0.20,0.10);
+        return t < .25 ? mix(a,b,t*4.) : t < .5 ? mix(b,c,(t-.25)*4.) : t < .75 ? mix(c,d,(t-.5)*4.) : mix(d,e,(t-.75)*4.);
+      }\n` + shader.fragmentShader.replace('#include <color_fragment>', `
+        if (length(gl_PointCoord - 0.5) > 0.5) discard;           // round dots
+        #include <color_fragment>
+        #ifdef USE_COLOR
+          diffuseColor.rgb = pow(vColor.rgb, vec3(2.2));           // .pnts RGB is sRGB, three works in linear
+        #endif
+        if (uMode > 0.5 ${hasColor ? '' : '|| true'}) diffuseColor.rgb = pow(ramp(clamp((vH - uHMin) / (uHMax - uHMin), 0., 1.)), vec3(2.2));`);
+  };
+  m.customProgramCacheKey = () => `lumidb-points-${hasColor}`;
+  m.needsUpdate = true;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 5. DATASET LOADING
+// ════════════════════════════════════════════════════════════════════════════
+const msgEl = document.getElementById('msg');
+const say = (text, bad = false) => { msgEl.textContent = text; msgEl.className = bad ? 'bad' : ''; };
+
+const counts = { loaded: 0, visible: 0 };     // points
+const pointsOf = new Map();                   // scene object → { n, visible }
+
+async function loadDataset(linkText, key) {
+  const link = parseLink(linkText);
+  if (!key) throw new Error('Enter an API key.');
+  if (state.tiles) { scene.remove(state.tiles.group); state.tiles.dispose(); }
+  pointsOf.clear(); materials.clear(); counts.loaded = counts.visible = 0; state.info = null;
+
+  const tiles = new TilesRenderer(link.tilesetUrl);
+  const reorient = new ReorientationPlugin({ up: '+z', recenter: true });
+  tiles.registerPlugin(reorient);     // lat/lon/height are filled in from the root tileset (see LumiDBPlugin)
+  tiles.registerPlugin(new LumiDBPlugin({
+    host: link.host, p: link.p, authorization: authHeader(key), reorient,
+    onRootExtent: (e) => {
+      state.info = e;
+      U.hMin.value = 0; U.hMax.value = Math.max(1, e.maxH - e.minH);
+      grid.scale.setScalar(e.radius * 2);
+      resetView();
+    },
+  }));
+  tiles.errorTarget = CONFIG.errorTarget;
+  tiles.setCamera(camera);
+  tiles.addEventListener('load-model', ({ scene: obj }) => obj.traverse((o) => {
+    if (!o.isPoints) return;
+    const hasColor = !!o.geometry.attributes.color;
+    state.hasColor = hasColor;
+    patchPointsMaterial(o.material, hasColor);
+    materials.add(o.material);
+    const n = o.geometry.attributes.position.count;
+    pointsOf.set(o, { n, visible: false });
+    counts.loaded += n;
+  }));
+  tiles.addEventListener('tile-visibility-change', ({ scene: obj, visible }) => obj.traverse((o) => {
+    const rec = pointsOf.get(o);
+    if (rec && rec.visible !== visible) { rec.visible = visible; counts.visible += visible ? rec.n : -rec.n; }
+  }));
+  tiles.addEventListener('dispose-model', ({ scene: obj }) => obj.traverse((o) => {
+    const rec = pointsOf.get(o);
+    if (!rec) return;
+    counts.loaded -= rec.n; if (rec.visible) counts.visible -= rec.n;
+    pointsOf.delete(o); materials.delete(o.material);
+  }));
+  tiles.addEventListener('load-error', ({ error, url }) => {
+    const text = String(error?.message ?? error);
+    say(/401|403/.test(text) ? `Not authorised (${text}). Check the API key.` : `Load error: ${text}\n${url}`, true);
+  });
+
+  scene.add(tiles.group);
+  state.tiles = tiles;
+  state.tables = link.tables;
+  say(`Loading ${link.tables.join(', ')} …${link.note ? '\n' + link.note : ''}`);
+  return link;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 6. NAVIGATION MODEL (VR): pose of the rig = where you are in the data.
+//    Every VR input path ends up in one of: fly, turn, climb, grab, reset.
+// ════════════════════════════════════════════════════════════════════════════
+const presenting = () => renderer.xr.isPresenting;
+const v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), v3 = new THREE.Vector3();
+const clampScale = (s) => THREE.MathUtils.clamp(s, CONFIG.minScale, CONFIG.maxScale);
+const heightAboveData = () => Math.max(0, camera.getWorldPosition(v1).y);
+const flySpeed = (boost) => (CONFIG.flyBase + CONFIG.flyPerMetre * heightAboveData()) * (boost ? CONFIG.boost : 1);
+
+/** Tabletop view: the dataset fits in ~1.2 m, 1 m in front of you, waist-high. */
+function overviewPose() {
+  const r = state.info?.radius ?? 50, h = state.info ? (state.info.maxH - state.info.minH) / 2 : 0;
+  const s = clampScale((2 * r) / 1.2);
+  rig.scale.setScalar(s);
+  rig.rotation.set(0, 0, 0);
+  rig.position.set(0, h - s * 1.2, s * 1.0);   // data centre lands at local (0, 1.2, -1)
+}
+
+function turnRig(delta) {   // yaw about the head, so you do not swing around
+  camera.getWorldPosition(v1);
+  rig.position.sub(v1).applyAxisAngle(UP, delta).add(v1);
+  rig.rotation.y += delta;
+}
+
+function flyRig(dx, dz, dy, dt, boost) {   // dx right, dz back, dy up; all in -1..1
+  camera.getWorldDirection(v1);
+  v2.crossVectors(v1, UP).normalize();
+  v3.set(0, 0, 0).addScaledVector(v1, -dz).addScaledVector(v2, dx);
+  v3.y += dy;
+  rig.position.addScaledVector(v3, flySpeed(boost) * dt);
+}
+
+// Grabbing: each grabbing hand pins a point of the data to itself. One hand pans.
+// Two hands also scale and rotate (about the vertical).
+const grabs = new Map();   // pose object → { anchor (data space) }
+const poseOf = (ctrl) => (ctrl.userData.grip.visible ? ctrl.userData.grip : ctrl);
+function reanchor() {
+  rig.updateMatrixWorld(true);
+  grabs.forEach((g, ctrl) => poseOf(ctrl).getWorldPosition(g.anchor));
+}
+const yawOf = (v) => Math.atan2(-v.z, v.x);
+function applyGrabs() {
+  const gs = [...grabs.entries()].map(([c, g]) => ({ local: poseOf(c).position, anchor: g.anchor }));
+  if (!gs.length) return;
+  let s = rig.scale.x, yaw = rig.rotation.y, aMid = gs[0].anchor, lMid = gs[0].local;
+  if (gs.length >= 2) {
+    const [a, b] = gs;
+    const dl = v1.subVectors(b.local, a.local), da = v2.subVectors(b.anchor, a.anchor);
+    if (dl.length() > 0.02) {
+      s = clampScale(da.length() / dl.length());
+      yaw = yawOf(da) - yawOf(dl);
+    }
+    aMid = new THREE.Vector3().addVectors(a.anchor, b.anchor).multiplyScalar(0.5);
+    lMid = new THREE.Vector3().addVectors(a.local, b.local).multiplyScalar(0.5);
+  }
+  rig.scale.setScalar(s);
+  rig.rotation.y = yaw;
+  rig.position.copy(aMid).sub(v3.copy(lMid).multiplyScalar(s).applyAxisAngle(UP, yaw));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 7. INPUT. Path A: Quest controllers (gamepad). Path B: hands / Vision Pro
+//    (pinch = select). Path C: desktop mouse + keyboard.
+// ════════════════════════════════════════════════════════════════════════════
+const controllers = [0, 1, 2, 3].map((i) => {
+  const ctrl = renderer.xr.getController(i), grip = renderer.xr.getControllerGrip(i);
+  ctrl.userData.grip = grip;
+  const ray = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x4cc2ff }));
+  ray.scale.z = 0.6; ray.visible = false; ray.frustumCulled = false;
+  ctrl.add(ray);
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.015, 12, 8), new THREE.MeshBasicMaterial({ color: 0x4cc2ff }));
+  dot.frustumCulled = false;
+  grip.add(dot);
+  ctrl.addEventListener('connected', (e) => { ctrl.userData.src = e.data; ray.visible = e.data.targetRayMode === 'tracked-pointer' && !e.data.hand; });
+  ctrl.addEventListener('disconnected', () => { ctrl.userData.src = null; grabs.delete(ctrl); reanchor(); });
+  ctrl.addEventListener('squeezestart', () => beginGrab(ctrl));
+  ctrl.addEventListener('squeezeend', () => endGrab(ctrl));
+  ctrl.addEventListener('selectstart', () => onSelectStart(ctrl));
+  ctrl.addEventListener('selectend', () => endGrab(ctrl));
+  rig.add(ctrl, grip);
+  return ctrl;
+});
+
+function beginGrab(ctrl) { if (!grabs.has(ctrl)) { grabs.set(ctrl, { anchor: new THREE.Vector3() }); reanchor(); } }
+function endGrab(ctrl) { if (grabs.delete(ctrl)) reanchor(); }
+
+let lastPinch = 0;
+function onSelectStart(ctrl) {
+  const src = ctrl.userData.src;
+  if (hudClick(ctrl)) return;                       // pointing at the VR panel: a click, not a grab
+  const isTrackedController = src?.targetRayMode === 'tracked-pointer' && !src.hand;
+  if (isTrackedController) return;                  // trigger = boost (polled), grips = grab
+  const now = performance.now();                    // pinch (hands, Vision Pro): drag = pan, double pinch = reset
+  if (now - lastPinch < 350) { grabs.clear(); resetView(); }
+  else beginGrab(ctrl);
+  lastPinch = now;
+}
+
+const stick = (gp) => {
+  const [x, y] = gp.axes.length >= 4 ? [gp.axes[2], gp.axes[3]] : [gp.axes[0], gp.axes[1]];
+  const dz = (n) => (Math.abs(n) < 0.15 ? 0 : n);
+  return [dz(x), dz(y)];
+};
+const prevButtons = {};
+let snapLatched = false;
+let moving = 0;   // 0..1, drives the comfort vignette
+
+function updateXRInput(dt) {
+  const session = renderer.xr.getSession();
+  let boost = false, move = 0;
+  for (const src of session.inputSources) {
+    const gp = src.gamepad;
+    if (!gp || src.hand) continue;
+    const h = src.handedness;
+    if (gp.buttons[0]?.value > 0.5) boost = true;
+    const aButton = gp.buttons[4]?.pressed;          // A (right) / X (left)
+    if (aButton && !prevButtons[h]) resetView();
+    prevButtons[h] = aButton;
+    const [x, y] = stick(gp);
+    if (h === 'left') {
+      flyRig(x, y, 0, dt, boost);
+      move = Math.max(move, Math.hypot(x, y));
+    } else if (h === 'right') {
+      if (state.smoothTurn) {
+        turnRig(-x * CONFIG.smoothDegPerSec * DEG * dt);
+        move = Math.max(move, Math.abs(x));
+      } else if (Math.abs(x) > 0.7 && !snapLatched) {
+        turnRig(-Math.sign(x) * CONFIG.snapDegrees * DEG);
+        snapLatched = true;
+      } else if (Math.abs(x) < 0.3) snapLatched = false;
+      flyRig(0, 0, -y, dt, boost);
+      move = Math.max(move, Math.abs(y));
+    }
+  }
+  if (grabs.size) { applyGrabs(); move = Math.max(move, 0.6); }
+  moving += ((move > 0.05 ? 1 : 0) - moving) * Math.min(1, dt * (move > 0.05 ? 6 : 3));
+}
+
+// Desktop
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+const keys = new Set();
+addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT') return; keys.add(e.code); if (e.code === 'KeyR') resetView(); });
+addEventListener('keyup', (e) => keys.delete(e.code));
+
+function updateDesktopInput(dt) {
+  const k = (c) => (keys.has(c) ? 1 : 0);
+  const dx = k('KeyD') - k('KeyA'), dz = k('KeyS') - k('KeyW'), dy = k('KeyE') - k('KeyQ');
+  if (dx || dz || dy) {
+    camera.getWorldDirection(v1);
+    v2.crossVectors(v1, UP).normalize();
+    v3.set(0, dy, 0).addScaledVector(v1, -dz).addScaledVector(v2, dx).multiplyScalar(flySpeed(keys.has('ShiftLeft') || keys.has('ShiftRight')) * dt);
+    camera.position.add(v3);
+    controls.target.add(v3);
+  }
+  controls.update();
+}
+
+function resetView() {
+  grabs.clear();
+  if (presenting()) { overviewPose(); return; }
+  const r = state.info?.radius ?? 50, h = state.info ? (state.info.maxH - state.info.minH) / 2 : 0;
+  camera.position.set(0, h + r * 0.9, r * 1.6);
+  controls.target.set(0, h * 0.5, 0);
+  camera.far = Math.max(1e4, r * 200);
+  camera.near = Math.max(0.05, r / 2000);
+  camera.updateProjectionMatrix();
+}
+
+// XR session
+const enterBtn = document.getElementById('enter-vr');
+let savedCamera = null;
+renderer.xr.addEventListener('sessionstart', () => {
+  savedCamera = { p: camera.position.clone(), t: controls.target.clone() };
+  controls.enabled = false;
+  camera.position.set(0, 0, 0);
+  camera.near = 0.05; camera.far = 5000; camera.updateProjectionMatrix();
+  panel.visible = true;
+  overviewPose();
+  enterBtn.textContent = 'Exit VR';
+});
+renderer.xr.addEventListener('sessionend', () => {
+  grabs.clear();
+  rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0); rig.scale.setScalar(1);
+  camera.position.copy(savedCamera.p); controls.target.copy(savedCamera.t);
+  camera.quaternion.identity();
+  controls.enabled = true; panel.visible = false;
+  resetView();
+  enterBtn.textContent = 'Enter VR';
+});
+if (navigator.xr) {
+  navigator.xr.isSessionSupported('immersive-vr').then((ok) => { if (ok) enterBtn.style.display = 'block'; }).catch(() => {});
+}
+enterBtn.onclick = async () => {
+  const session = renderer.xr.getSession();
+  if (session) return session.end();
+  const s = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] });
+  await renderer.xr.setSession(s);
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// 8. HUD: DOM overlay on desktop, floating canvas panel in VR. Same actions.
+// ════════════════════════════════════════════════════════════════════════════
+function setPointSize(size) {
+  state.pointSize = THREE.MathUtils.clamp(size, 0.002, 5);
+  materials.forEach((m) => { m.size = state.pointSize; });
+}
+const actions = [
+  { label: () => 'Size −', run: () => setPointSize(state.pointSize / 1.25) },
+  { label: () => 'Size +', run: () => setPointSize(state.pointSize * 1.25) },
+  { label: () => (state.hasColor ? `Colour: ${state.colorMode}` : 'Colour: height (no RGB)'),
+    run: () => { state.colorMode = state.colorMode === 'rgb' ? 'height' : 'rgb'; U.mode.value = state.colorMode === 'height' ? 1 : 0; } },
+  { label: () => `Turn: ${state.smoothTurn ? 'smooth' : 'snap'}`, run: () => { state.smoothTurn = !state.smoothTurn; } },
+  { label: () => `Vignette: ${state.vignette ? 'on' : 'off'}`, run: () => { state.vignette = !state.vignette; } },
+  { label: () => 'Reset view', run: resetView },
+];
+const fmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(2) + ' M' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' k' : String(n));
+const scaleText = () => { const s = presenting() ? rig.scale.x : 1; return s >= 1 ? `1:${Math.round(s)}` : `${Math.round(1 / s)}:1`; };
+const hudLines = () => [
+  state.tables.join(', ') || 'No dataset',
+  `${fmt(counts.visible)} points drawn (${fmt(counts.loaded)} loaded)`,
+  `Scale ${scaleText()} · ${fps.toFixed(0)} fps`,
+];
+
+const hud = document.getElementById('hud');
+hud.innerHTML = '<div class="name"></div><div class="row"></div><div class="row"></div><div class="btns"></div>';
+const hudBtns = actions.map((a) => { const b = document.createElement('button'); b.onclick = a.run; hud.querySelector('.btns').append(b); return b; });
+function updateDomHud() {
+  const [a, b, c] = hudLines();
+  const rows = hud.children;
+  rows[0].textContent = a; rows[1].textContent = b; rows[2].textContent = c;
+  actions.forEach((act, i) => { hudBtns[i].textContent = act.label(); });
+}
+
+// VR panel: a canvas texture on a plane that rides on the rig (so it stays put as you scale).
+const PW = 640, PH = 400;
+const pCanvas = Object.assign(document.createElement('canvas'), { width: PW, height: PH });
+const pctx = pCanvas.getContext('2d');
+const pTex = new THREE.CanvasTexture(pCanvas);
+pTex.colorSpace = THREE.SRGBColorSpace;
+const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5 * PH / PW), new THREE.MeshBasicMaterial({ map: pTex, transparent: true, depthTest: false }));
+panel.renderOrder = 998; panel.visible = false;
+panel.frustumCulled = false;   // three culls this wrongly under a scaled rig + XR camera
+panel.position.set(-0.45, 1.1, -0.75); panel.rotation.set(-0.25, 0.5, 0);
+rig.add(panel);
+const btnRects = [];
+let panelKey = '';
+function drawPanel() {
+  const lines = hudLines(), labels = actions.map((a) => a.label());
+  const key = lines.join('|') + labels.join('|');
+  if (key === panelKey) return;
+  panelKey = key;
+  pctx.clearRect(0, 0, PW, PH);
+  pctx.fillStyle = 'rgba(16,22,30,0.92)'; pctx.beginPath(); pctx.roundRect(0, 0, PW, PH, 24); pctx.fill();
+  pctx.fillStyle = '#e6edf3'; pctx.font = '600 34px system-ui'; pctx.fillText(lines[0], 28, 56);
+  pctx.fillStyle = '#8b98a5'; pctx.font = '26px system-ui'; pctx.fillText(lines[1], 28, 100); pctx.fillText(lines[2], 28, 136);
+  btnRects.length = 0;
+  labels.forEach((label, i) => {
+    const w = 190, h = 70, x = 28 + (i % 3) * (w + 14), y = 170 + Math.floor(i / 3) * (h + 14);
+    btnRects.push({ x, y, w, h });
+    pctx.fillStyle = '#17212c'; pctx.strokeStyle = '#2a3542'; pctx.beginPath(); pctx.roundRect(x, y, w, h, 12); pctx.fill(); pctx.stroke();
+    pctx.fillStyle = '#e6edf3'; pctx.font = '24px system-ui'; pctx.textAlign = 'center'; pctx.fillText(label, x + w / 2, y + 44); pctx.textAlign = 'left';
+  });
+  pTex.needsUpdate = true;
+}
+const raycaster = new THREE.Raycaster();
+function hudClick(ctrl) {
+  if (!panel.visible) return false;
+  raycaster.setFromXRController(ctrl);
+  const hit = raycaster.intersectObject(panel)[0];
+  if (!hit) return false;
+  const px = hit.uv.x * PW, py = (1 - hit.uv.y) * PH;
+  const i = btnRects.findIndex((r) => px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
+  if (i >= 0) { actions[i].run(); panelKey = ''; }
+  return true;
+}
+
+// Comfort vignette: a dark ring on the camera, faded in while you move.
+const vignette = new THREE.Mesh(new THREE.PlaneGeometry(3, 3), new THREE.ShaderMaterial({
+  transparent: true, depthTest: false, depthWrite: false,
+  uniforms: { uAmount: { value: 0 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }',
+  fragmentShader: 'uniform float uAmount; varying vec2 vUv; void main(){ float d = length(vUv-.5)*2.; gl_FragColor = vec4(0.,0.,0., smoothstep(.25,.75,d)*uAmount); }',
+}));
+vignette.position.z = -0.1; vignette.renderOrder = 999; vignette.visible = false; vignette.frustumCulled = false;
+camera.add(vignette);
+
+// ════════════════════════════════════════════════════════════════════════════
+// 9. MAIN LOOP
+// ════════════════════════════════════════════════════════════════════════════
+let fps = 0, last = performance.now();
+renderer.setAnimationLoop(() => {
+  const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000);
+  last = now; fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
+
+  if (presenting()) updateXRInput(dt); else updateDesktopInput(dt);
+  U.invScale.value = 1 / rig.scale.x;
+  vignette.visible = presenting() && state.vignette;
+  vignette.material.uniforms.uAmount.value = moving * 0.75;
+
+  rig.updateMatrixWorld(true);
+  if (presenting()) renderer.xr.updateCamera(camera);   // so level of detail sees this frame's head pose
+  const tiles = state.tiles;
+  if (tiles) {
+    tiles.setCamera(camera);
+    if (presenting()) tiles.setResolution(camera, CONFIG.xrEyeResolution, CONFIG.xrEyeResolution);
+    else tiles.setResolutionFromRenderer(camera, renderer);
+    camera.updateMatrixWorld();
+    tiles.update();
+  }
+  if (presenting()) drawPanel(); else updateDomHud();
+  renderer.render(scene, camera);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 10. SETUP FORM, URL PARAMS, EMULATOR, TEST HOOKS
+// ════════════════════════════════════════════════════════════════════════════
+const linkEl = document.getElementById('link'), keyEl = document.getElementById('key');
+const store = {
+  get: (k) => { try { return localStorage.getItem('lumidb.' + k) ?? ''; } catch { return ''; } },
+  set: (k, v) => { try { localStorage.setItem('lumidb.' + k, v); } catch {} },
+};
+// Quick testing: #link=…&key=… (stripped from the address bar once read, so the key is not left in history).
+const hash = new URLSearchParams(location.hash.slice(1));
+linkEl.value = hash.get('link') || store.get('link');
+keyEl.value = hash.get('key') || store.get('key');
+if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+
+async function onLoad() {
+  try {
+    const link = await loadDataset(linkEl.value, keyEl.value.trim());
+    store.set('link', linkEl.value.trim()); store.set('key', keyEl.value.trim());
+    document.getElementById('setup').style.display = 'none';
+    hud.style.display = 'block';
+    state.tiles.addEventListener('load-root-tileset', () => say(`Loaded ${link.tables.join(', ')}`));
+  } catch (err) { say(err.message, true); }
+}
+document.getElementById('load').onclick = onLoad;
+if (linkEl.value && keyEl.value) onLoad();
+resetView();
+
+// Test hooks (used by test/smoke.mjs; handy in the console too).
+window.__app = {
+  state: () => ({
+    points: counts.visible, loaded: counts.loaded, fps, inXR: presenting(), table: state.tables.join(','),
+    size: state.pointSize, colorMode: state.colorMode, scale: rig.scale.x, yaw: rig.rotation.y, rig: rig.position.toArray(), extent: state.info, camera: camera.getWorldPosition(new THREE.Vector3()).toArray(),
+  }),
+  resetView, rig, camera, panel, enterVR: () => enterBtn.click(),
+};
+</script>
+</body>
+</html>

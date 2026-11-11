@@ -1,0 +1,13 @@
+{
+  "name": "lumidb-webxr-starter",
+  "private": true,
+  "description": "WebXR starter that streams a LumiDB point cloud. index.html has no build step; this package.json only exists for the smoke test.",
+  "type": "module",
+  "scripts": {
+    "serve": "python3 -m http.server 8080",
+    "test": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}
