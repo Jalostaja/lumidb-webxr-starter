@@ -425,6 +425,7 @@ const stick = (gp) => {
   const dz = (n) => (Math.abs(n) < 0.15 ? 0 : n);
   return [dz(x), dz(y)];
 };
+const keys = new Set();   // pressed key codes, used by desktop and VR
 const prevButtons = {};
 let snapLatched = false;
 let moving = 0;   // 0..1, drives the comfort vignette
@@ -456,6 +457,13 @@ function updateXRInput(dt) {
       move = Math.max(move, Math.abs(y));
     }
   }
+  // Keyboard (WASD + Q/E, Shift = boost) works in VR too, where the browser delivers key events (desktop, emulator).
+  const k = (c) => (keys.has(c) ? 1 : 0);
+  const kx = k('KeyD') - k('KeyA'), kz = k('KeyS') - k('KeyW'), ky = k('KeyE') - k('KeyQ');
+  if (kx || kz || ky) {
+    flyRig(kx, kz, ky, dt, boost || keys.has('ShiftLeft') || keys.has('ShiftRight'));
+    move = Math.max(move, 1);
+  }
   if (grabs.size) { applyGrabs(); move = Math.max(move, 0.6); }
   moving += ((move > 0.05 ? 1 : 0) - moving) * Math.min(1, dt * (move > 0.05 ? 6 : 3));
 }
@@ -463,7 +471,6 @@ function updateXRInput(dt) {
 // Desktop
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
-const keys = new Set();
 addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT') return; keys.add(e.code); if (e.code === 'KeyR') resetView(); });
 addEventListener('keyup', (e) => keys.delete(e.code));
 

@@ -65,7 +65,7 @@ LUMIDB_API_KEY=… LUMIDB_TILESET_LINK='https://…/tables/3d_tileset?p=…' npm
 5. Dataset loading and point counters (`load-model`, `tile-visibility-change`, `dispose-model`).
 6. Navigation functions: `overviewPose`, `turnRig`, `flyRig`, grabs (`beginGrab`/`applyGrabs`: each hand pins a data point to itself;
    two hands also scale and yaw).
-7. Input: controllers (gamepad: left stick fly, right stick X turn / Y climb, trigger boost, grips grab, A/X reset), hands and Vision Pro
+7. Input (keyboard WASD/QE also flies in VR via the shared `keys` set): controllers (gamepad: left stick fly, right stick X turn / Y climb, trigger boost, grips grab, A/X reset), hands and Vision Pro
    (pinch = select: drag pans, two hands scale+rotate, double pinch resets), desktop (OrbitControls + WASD/QE/R).
 8. HUD: DOM overlay and a canvas-texture panel in VR driven by the same `actions` array. VR clicks use a controller ray.
 9. Main loop. Order matters: inputs → `rig.updateMatrixWorld` → `renderer.xr.updateCamera` → `tiles.update` → render.

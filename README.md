@@ -21,6 +21,8 @@ Quick test: `index.html#link=<link>&key=<key>`.
 | Scale and rotate the world | Both grips: grab and pull apart/together | Two-hand pinch | Wheel to zoom |
 | Reset to the overview | A / X | Double pinch | R |
 
+A keyboard also works in VR wherever the browser passes key events through (a desktop with the emulator, for example): WASD and Q/E fly the same way as the left stick, and Shift boosts.
+
 The floating panel (VR) or overlay (desktop) shows the dataset, point count and scale (1:N), and toggles point size, colour mode
 (RGB or height), turn style and the comfort vignette. Point at a button and pull the trigger or pinch.
 

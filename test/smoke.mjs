@@ -92,6 +92,17 @@ await step('fly forward (left stick)', async () => {
   if (d < 0.2) throw new Error('rig did not move');
 });
 
+await step('fly forward (keyboard W)', async () => {
+  before = await app();
+  await page.keyboard.down('KeyW');
+  await wait(1500);
+  await page.keyboard.up('KeyW');
+  const after = await app();
+  const d = near(before.rig, after.rig);
+  console.log(`  rig moved ${d.toFixed(2)} m`);
+  if (d < 0.2) throw new Error('W did not move the rig in VR');
+});
+
 await step('scale with both grips', async () => {
   before = await app();
   await page.evaluate(() => {
