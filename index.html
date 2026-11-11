@@ -87,7 +87,7 @@ const CONFIG = {
 
   flyBase: 1, flyPerMetre: 0.8, boost: 4,   // m/s = (base + perMetre × height above data) × boost
   snapDegrees: 30, smoothDegPerSec: 90,
-  minScale: 0.02, maxScale: 20000,          // world scale limits (1:N)
+  minScale: 0.02, maxScale: 1e6,            // world scale limits (1:N); regional datasets need ~1:250000 for a tabletop overview
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -288,7 +288,7 @@ async function loadDataset(linkText, key) {
     },
   }));
   tiles.errorTarget = CONFIG.errorTarget;
-  tiles.setCamera(camera);
+  activeLod = null;   // the main loop registers the level-of-detail camera
   tiles.addEventListener('load-model', ({ scene: obj }) => obj.traverse((o) => {
     if (!o.isPoints) return;
     const hasColor = !!o.geometry.attributes.color;
@@ -565,7 +565,7 @@ pTex.colorSpace = THREE.SRGBColorSpace;
 const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5 * PH / PW), new THREE.MeshBasicMaterial({ map: pTex, transparent: true, depthTest: false }));
 panel.renderOrder = 998; panel.visible = false;
 panel.frustumCulled = false;   // three culls this wrongly under a scaled rig + XR camera
-panel.position.set(-0.45, 1.1, -0.75); panel.rotation.set(-0.25, 0.5, 0);
+panel.position.set(-0.7, 1.25, -0.65); panel.rotation.set(-0.2, 0.65, 0);
 rig.add(panel);
 const btnRects = [];
 let panelKey = '';
@@ -612,6 +612,21 @@ camera.add(vignette);
 // ════════════════════════════════════════════════════════════════════════════
 // 9. MAIN LOOP
 // ════════════════════════════════════════════════════════════════════════════
+// Level of detail camera. On desktop it is the camera. In VR it is the head pose with ONE eye's projection:
+// three's combined stereo camera mixes the eye separation (world units, huge under a scaled rig) with near/far
+// (view units), which pushes its near plane out past the whole dataset and nothing counts as visible.
+const xrLod = new THREE.PerspectiveCamera();
+let activeLod = null;
+function lodCamera() {
+  const eye = presenting() ? renderer.xr.getCamera().cameras[0] : null;
+  if (!eye) return camera;
+  xrLod.matrixWorld.copy(camera.matrixWorld);
+  xrLod.matrixWorldInverse.copy(camera.matrixWorld).invert();
+  xrLod.projectionMatrix.copy(eye.projectionMatrix);
+  xrLod.projectionMatrixInverse.copy(eye.projectionMatrixInverse);
+  return xrLod;
+}
+
 let fps = 0, last = performance.now();
 renderer.setAnimationLoop(() => {
   const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000);
@@ -626,10 +641,11 @@ renderer.setAnimationLoop(() => {
   if (presenting()) renderer.xr.updateCamera(camera);   // so level of detail sees this frame's head pose
   const tiles = state.tiles;
   if (tiles) {
-    tiles.setCamera(camera);
-    if (presenting()) tiles.setResolution(camera, CONFIG.xrEyeResolution, CONFIG.xrEyeResolution);
-    else tiles.setResolutionFromRenderer(camera, renderer);
     camera.updateMatrixWorld();
+    const lod = lodCamera();
+    if (lod !== activeLod) { if (activeLod) tiles.deleteCamera(activeLod); tiles.setCamera(lod); activeLod = lod; }
+    if (presenting()) tiles.setResolution(lod, CONFIG.xrEyeResolution, CONFIG.xrEyeResolution);
+    else tiles.setResolutionFromRenderer(lod, renderer);
     tiles.update();
   }
   if (presenting()) drawPanel(); else updateDomHud();
@@ -674,7 +690,7 @@ window.__app = {
     points: counts.visible, loaded: counts.loaded, fps, inXR: presenting(), table: state.tables.join(','),
     size: state.pointSize, colorMode: state.colorMode, scale: rig.scale.x, yaw: rig.rotation.y, rig: rig.position.toArray(), extent: state.info, camera: camera.getWorldPosition(new THREE.Vector3()).toArray(),
   }),
-  resetView, rig, camera, panel, enterVR: () => enterBtn.click(),
+  renderer, resetView, rig, camera, panel, tiles: () => state.tiles, enterVR: () => enterBtn.click(),
 };
 </script>
 </body>

@@ -43,7 +43,11 @@ LUMIDB_API_KEY=… LUMIDB_TILESET_LINK='https://…/tables/3d_tileset?p=…' npm
   3d-tiles-renderer. The degree fix is therefore a shim (`CONFIG.REGION_DEGREES_FIX`, default `'auto'`: only converts when the values
   cannot be radians). Delete it, and `shimTileset`'s region block, once the server is fixed.
 - **Tile volumes are loose octree cells.** The tight data bounds are the root's own `content.boundingVolume`; `shimTileset` uses that
-  for the floor height, the overview framing and the recentering.
+  for the floor height, the overview framing and the recentering. Outlier points stretch it (the Hawke's Bay test set reports
+  heights of -607 m to 14,443 m), so the floor can sit well below the terrain.
+- **Hosts and payloads vary.** Links work on `app.lumidb.com/api` and `api.lumidb.com/api`. `p` may use `tables: [..]` instead of
+  `table_name`. Datasets range from a 110 m street scan to a ~210 km regional survey (8,775 tiles, root `geometricError` ~17 km),
+  so world scale must reach ~1:250,000 (`CONFIG.maxScale`).
 
 ## How the code is laid out (`index.html`, numbered sections)
 
@@ -70,7 +74,10 @@ LUMIDB_API_KEY=… LUMIDB_TILESET_LINK='https://…/tables/3d_tileset?p=…' npm
 ## Conventions and gotchas
 
 - Pin exact versions (at least two weeks old) in the import map. After changing one, run `npm test`.
-- Objects under the scaled rig that are small (panel, rays) need `frustumCulled = false`, or three culls them in XR.
+- **Scaled rig + stereo = three's combined XR camera is wrong.** Its near plane is derived from the eye separation in world units
+  (huge under a big rig scale) mixed with near/far in view units. Never use `camera.projectionMatrix` or the main camera's frustum in VR.
+  Level of detail uses `lodCamera()` (head pose + one eye's projection); small objects under the rig (panel, rays) set
+  `frustumCulled = false` for the same reason. Symptom of getting this wrong: points load but 0 draw after entering VR.
 - Everything in the rig (panel, vignette) scales with the world, so apparent size stays constant.
 - zsh: never use `path` as a loop variable in shell snippets (it is tied to `PATH`).
 - Keep compat shims behind a flag and commented as deletable.
