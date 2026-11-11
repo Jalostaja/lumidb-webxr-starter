@@ -8,6 +8,8 @@ Fly through a LumiDB point cloud on a Quest, a Vision Pro or a desktop browser. 
 2. **Pick a dataset.** Press **Browse my datasets** to list everything the key can see, filter by name, and click one. Or paste a 3D Tiles
    link from the LumiDB viewer (`https://app.lumidb.com/api/tables/3d_tileset?p=…`) and press **Load link**.
 3. **Enter VR.** Wait for the points, then press **Enter VR** (it shows when a headset is available).
+   On a normal desktop browser the button reads "VR not available" and says why; add `?emulate=quest` to the address to try the built-in
+   Quest emulator.
    No headset? The same page works on a desktop: drag to orbit, wheel to zoom, WASD + Q/E to fly, R to reset.
    **Change dataset** in the bottom-left panel reopens the picker.
 

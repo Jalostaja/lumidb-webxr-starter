@@ -29,6 +29,7 @@
   #hud .btns { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   #hud .btns button { padding:4px 8px; font-size:12px; }
   #enter-vr { position:fixed; bottom:12px; right:12px; display:none; }
+  #vr-hint { position:fixed; bottom:52px; right:12px; max-width:min(320px, calc(100vw - 24px)); display:none; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:12px; color:var(--dim); text-align:right; }
   #help { position:fixed; bottom:12px; left:50%; transform:translateX(-50%); color:var(--dim); font-size:12px; pointer-events:none; text-align:center; }
 </style>
 <!-- Versions are pinned exactly. To upgrade, change them here and re-run `npm test`. -->
@@ -62,6 +63,7 @@
 </div>
 <div id="hud" class="panel"></div>
 <button id="enter-vr" class="primary">Enter VR</button>
+<div id="vr-hint"></div>
 <div id="help">Desktop: drag to orbit · wheel to zoom · WASD + Q/E to fly (Shift = fast) · R to reset</div>
 
 <script type="module">
@@ -512,7 +514,7 @@ function resetView() {
 }
 
 // XR session
-const enterBtn = document.getElementById('enter-vr');
+const enterBtn = document.getElementById('enter-vr'), vrHint = document.getElementById('vr-hint');
 let savedCamera = null;
 renderer.xr.addEventListener('sessionstart', () => {
   savedCamera = { p: camera.position.clone(), t: controls.target.clone() };
@@ -532,9 +534,22 @@ renderer.xr.addEventListener('sessionend', () => {
   resetView();
   enterBtn.textContent = 'Enter VR';
 });
+// Always show the button, so it is clear why VR is or is not available.
+enterBtn.style.display = 'block';
+const noVR = (why) => {
+  enterBtn.disabled = true;
+  enterBtn.textContent = 'VR not available';
+  enterBtn.title = why;
+  enterBtn.style.opacity = '0.55';
+  enterBtn.style.cursor = 'not-allowed';
+  vrHint.textContent = why;
+  vrHint.style.display = 'block';
+};
 if (navigator.xr) {
-  navigator.xr.isSessionSupported('immersive-vr').then((ok) => { if (ok) enterBtn.style.display = 'block'; }).catch(() => {});
-}
+  navigator.xr.isSessionSupported('immersive-vr')
+    .then((ok) => { if (!ok) noVR('This browser reports no VR headset. Open the page in a headset browser, or add ?emulate=quest to the address to try the built-in emulator.'); })
+    .catch(() => noVR('WebXR is blocked here (it needs HTTPS or localhost).'));
+} else noVR('This browser has no WebXR. Use a headset browser (Quest Browser, Safari on Vision Pro) over HTTPS, or add ?emulate=quest to try the emulator.');
 enterBtn.onclick = async () => {
   const session = renderer.xr.getSession();
   if (session) return session.end();
