@@ -68,6 +68,7 @@ LUMIDB_API_KEY=… LUMIDB_TILESET_LINK='https://…/tables/3d_tileset?p=…' npm
 7. Input (keyboard WASD/QE also flies in VR via the shared `keys` set): controllers (gamepad: left stick fly, right stick X turn / Y climb, trigger boost, grips grab, A/X reset), hands and Vision Pro
    (pinch = select: drag pans, two hands scale+rotate, double pinch resets), desktop (OrbitControls + WASD/QE/R).
 8. HUD: DOM overlay and a canvas-texture panel in VR driven by the same `actions` array. VR clicks use a controller ray.
+   The desktop-only "Copy headset link" button builds `<page>#link=…&key=…` (the hash is stripped from the address bar on read).
 9. Main loop. Order matters: inputs → `rig.updateMatrixWorld` → `renderer.xr.updateCamera` → `tiles.update` → render.
 10. Form, URL hash, `?emulate=quest`, and `window.__app` test hooks.
 

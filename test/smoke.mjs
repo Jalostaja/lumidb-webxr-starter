@@ -37,7 +37,8 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 
 await mkdir(shots, { recursive: true });
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
-const page = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
+const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['clipboard-read', 'clipboard-write'] });
+const page = await context.newPage();
 
 const problems = [];
 const lumidb = (u) => u.includes('lumidb.com');
@@ -71,6 +72,14 @@ await step('refined', async () => {
   const s = await app();
   console.log(`  ${s.points} points drawn, ${s.loaded} loaded`);
   if (s.points < 1000) throw new Error(`only ${s.points} points`);
+});
+
+await step('copy headset link', async () => {
+  await page.click('text=Copy headset link');
+  const text = await page.evaluate(() => navigator.clipboard.readText());
+  const hash = new URLSearchParams(new URL(text).hash.slice(1));
+  if (hash.get('link') !== link || hash.get('key') !== key) throw new Error('copied link does not match the loaded link and key');
+  if (text.includes('emulate')) throw new Error('copied link carries the emulate flag');
 });
 
 await step('enter VR', async () => {

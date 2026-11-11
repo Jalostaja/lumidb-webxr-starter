@@ -227,6 +227,7 @@ const state = { // shared UI state
   pointSize: CONFIG.pointSize,
   smoothTurn: false, vignette: true,
   hasColor: true,
+  link: '', key: '',    // what was loaded, for "Copy headset link"
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -556,6 +557,20 @@ const hudLines = () => [
 const hud = document.getElementById('hud');
 hud.innerHTML = '<div class="name"></div><div class="row"></div><div class="row"></div><div class="btns"></div>';
 const hudBtns = actions.map((a) => { const b = document.createElement('button'); b.onclick = a.run; hud.querySelector('.btns').append(b); return b; });
+// "Copy headset link": this page's address + #link=…&key=… so a headset can open it without typing.
+// The key travels in the URL you send, so treat the copied text as a secret.
+const copyBtn = document.createElement('button');
+copyBtn.textContent = 'Copy headset link';
+copyBtn.title = 'Copies a URL that includes your API key. Send it to the headset privately.';
+copyBtn.onclick = async () => {
+  if (location.protocol === 'file:') { copyBtn.textContent = 'Host the page first (file:// will not open on a headset)'; return; }
+  const url = `${location.origin}${location.pathname}#${new URLSearchParams({ link: state.link, key: state.key })}`;
+  try { await navigator.clipboard.writeText(url); copyBtn.textContent = 'Copied. Treat it like a password.'; }
+  catch { window.prompt('Copy this headset link:', url); }
+  setTimeout(() => { copyBtn.textContent = 'Copy headset link'; }, 4000);
+};
+hud.querySelector('.btns').append(copyBtn);
+
 function updateDomHud() {
   const [a, b, c] = hudLines();
   const rows = hud.children;
@@ -681,7 +696,8 @@ if (location.hash) history.replaceState(null, '', location.pathname + location.s
 async function onLoad() {
   try {
     const link = await loadDataset(linkEl.value, keyEl.value.trim());
-    store.set('link', linkEl.value.trim()); store.set('key', keyEl.value.trim());
+    state.link = linkEl.value.trim(); state.key = keyEl.value.trim();
+    store.set('link', state.link); store.set('key', state.key);
     document.getElementById('setup').style.display = 'none';
     hud.style.display = 'block';
     state.tiles.addEventListener('load-root-tileset', () => say(`Loaded ${link.tables.join(', ')}`));

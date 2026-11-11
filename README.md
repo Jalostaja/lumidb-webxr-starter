@@ -9,7 +9,9 @@ Fly through a LumiDB point cloud on a Quest, a Vision Pro or a desktop browser. 
 3. **Enter VR.** Press **Load**, wait for the points, then press **Enter VR** (it shows when a headset is available).
    No headset? The same page works on a desktop: drag to orbit, wheel to zoom, WASD + Q/E to fly, R to reset.
 
-Quick test: `index.html#link=<link>&key=<key>`.
+**Headset without typing:** load the dataset on a desktop (on the hosted page), press **Copy headset link**, and send the copied URL to the
+headset (message, email, Safari Handoff, the Quest phone app). It opens already loaded. The URL contains your API key, so send it
+privately and use a scoped key. Quick test by hand: `…/#link=<link>&key=<key>`.
 
 ### Controls
 
