@@ -70,7 +70,9 @@ LUMIDB_API_KEY=… LUMIDB_TILESET_LINK='https://…/tables/3d_tileset?p=…' npm
 8. HUD: DOM overlay and a canvas-texture panel in VR driven by the same `actions` array. VR clicks use a controller ray.
    The desktop-only "Copy headset link" button builds `<page>#link=…&key=…` (the hash is stripped from the address bar on read).
 9. Main loop. Order matters: inputs → `rig.updateMatrixWorld` → `renderer.xr.updateCamera` → `tiles.update` → render.
-10. Form, URL hash, `?emulate=quest`, and `window.__app` test hooks.
+10. Form, URL hash, `?emulate=quest`, and `window.__app` test hooks. **Browse my datasets** calls `GET <base>/tables` (no pagination; items
+    have `name`, `table_proj`, `bounds_wgs84`, `content_aabb`) and builds a link `{ table_name, boundary_proj: table_proj }` for the clicked one.
+    Hash params: `link`, `key`, `base`. With a saved link and key the page auto-loads; with only a key it opens the list.
 
 ## Conventions and gotchas
 

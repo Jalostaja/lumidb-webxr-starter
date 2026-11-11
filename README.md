@@ -4,14 +4,14 @@ Fly through a LumiDB point cloud on a Quest, a Vision Pro or a desktop browser. 
 
 ## Use it
 
-1. **Paste a link.** In the LumiDB viewer, copy the 3D Tiles link (it looks like `https://api.lumidb.com/api/tables/3d_tileset?p=…`).
-2. **Paste a key.** Create an API key in LumiDB and paste it in. It is stored in your browser only and sent only to the LumiDB host.
-3. **Enter VR.** Press **Load**, wait for the points, then press **Enter VR** (it shows when a headset is available).
+1. **Paste a key.** Create an API key in LumiDB and paste it in. It is stored in your browser only and sent only to the LumiDB host.
+2. **Pick a dataset.** Press **Browse my datasets** to list everything the key can see, filter by name, and click one. Or paste a 3D Tiles
+   link from the LumiDB viewer (`https://app.lumidb.com/api/tables/3d_tileset?p=…`) and press **Load link**.
+3. **Enter VR.** Wait for the points, then press **Enter VR** (it shows when a headset is available).
    No headset? The same page works on a desktop: drag to orbit, wheel to zoom, WASD + Q/E to fly, R to reset.
+   **Change dataset** in the bottom-left panel reopens the picker.
 
-**Headset without typing:** load the dataset on a desktop (on the hosted page), press **Copy headset link**, and send the copied URL to the
-headset (message, email, Safari Handoff, the Quest phone app). It opens already loaded. The URL contains your API key, so send it
-privately and use a scoped key. Quick test by hand: `…/#link=<link>&key=<key>`.
+The API address (under "API address" in the form) defaults to `https://app.lumidb.com/api` and follows a pasted link's host.
 
 ### Controls
 

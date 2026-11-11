@@ -41,13 +41,15 @@ const context = await browser.newContext({ viewport: { width: 1280, height: 800 
 const page = await context.newPage();
 
 const problems = [];
-const lumidb = (u) => u.includes('lumidb.com');
-page.on('console', (m) => {
-  if (m.type() === 'error' || /CORS|Access-Control/i.test(m.text())) problems.push(`console ${m.type()}: ${m.text()}`);
-});
-page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-page.on('requestfailed', (r) => problems.push(`request failed: ${r.url().slice(0, 120)} (${r.failure()?.errorText})`));
-page.on('response', (r) => { if (r.status() === 401 || r.status() === 403) problems.push(`${r.status()} from ${r.url().slice(0, 120)}`); });
+const watch = (pg) => {
+  pg.on('console', (m) => {
+    if (m.type() === 'error' || /CORS|Access-Control/i.test(m.text())) problems.push(`console ${m.type()}: ${m.text()}`);
+  });
+  pg.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
+  pg.on('requestfailed', (r) => problems.push(`request failed: ${r.url().slice(0, 120)} (${r.failure()?.errorText})`));
+  pg.on('response', (r) => { if (r.status() === 401 || r.status() === 403) problems.push(`${r.status()} from ${r.url().slice(0, 120)}`); });
+};
+watch(page);
 
 const results = [];
 const step = async (name, fn) => {
@@ -162,6 +164,27 @@ await step('VR panel click (trigger on a button)', async () => {
   console.log(`  point size ${before.size} -> ${after.size}`);
   if (!(after.size > before.size)) throw new Error('panel click did not register');
 });
+
+// Second flow: only a key. List the account's datasets, filter, click the one from the link, check it loads.
+const linkUrl = new URL(link);
+const base = linkUrl.origin + linkUrl.pathname.replace(/\/tables\/3d_tileset\/?$/, '');
+const wanted = (() => { const p = JSON.parse(Buffer.from(decodeURIComponent(linkUrl.searchParams.get('p')), 'base64').toString()); return p.table_name ?? p.tables?.[0]; })();
+const page2 = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();   // fresh storage: a first-time visitor with only a key
+watch(page2);
+await page2.goto(`${origin}/index.html#${new URLSearchParams({ key, base })}`);
+const shotsAt = (n) => page2.screenshot({ path: join(shots, n) });
+try {
+  await page2.waitForSelector('#tables button', { timeout: 30000 });
+  const total = await page2.locator('#tables button').count();
+  await page2.fill('#filter', wanted);
+  const matches = await page2.locator('#tables button').count();
+  console.log(`✓ browse datasets: ${total} listed, ${matches} match "${wanted}"`);
+  await shotsAt('20-browse-list.png');
+  await page2.locator('#tables button').first().click();
+  await page2.waitForFunction(() => (window.__app?.state().points ?? 0) > 1000, null, { timeout: 90000 });
+  console.log(`✓ browse datasets: loaded ${(await page2.evaluate(() => window.__app.state().table))}`);
+  await shotsAt('21-browse-loaded.png');
+} catch (e) { problems.push(`browse datasets: ${e.message}`); console.log('✗ browse datasets -', e.message); await shotsAt('20-browse-failed.png'); }
 
 const final = await app();
 console.log(`fps ~${final.fps.toFixed(0)} (software GL, not representative), ${final.points} points drawn`);
